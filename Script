@@ -6,7 +6,6 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -147,85 +146,31 @@ end
 --========================================================
 -- HTTP KEY SYSTEM CONFIG
 --========================================================
--- Works in two modes:
--- 1) Your own game: add GoldhaxKeyValidator.server.lua to ServerScriptService; client uses RemoteFunction.
--- 2) Executor in someone else's game: no server script, so we use the executor's HTTP (syn.request, request, etc.) to call the site.
 
-local YOUR_WEBSITE = "https://www.goldhax.space"
+local YOUR_WEBSITE = "https://www.goldhax.space"  -- Your actual website
 
--- Cached remote (only used if game has the server validator script)
-local validateRemote = nil
+--========================================================
+-- Function to validate a key with your server
+--========================================================
 
--- Try executor HTTP (for when you're not the server owner / running in an executor)
-local function validateWithExecutorHttp(keyTrimmed, userIdStr)
-	local url = YOUR_WEBSITE .. "/validate?key=" .. HttpService:UrlEncode(keyTrimmed) .. "&userId=" .. HttpService:UrlEncode(userIdStr)
-	local body = nil
-	-- Synapse / Synapse X
-	if syn and syn.request then
-		local ok, res = pcall(function()
-			return syn.request({ Url = url, Method = "GET" })
-		end)
-		if ok and res and res.Body then body = res.Body end
-	end
-	-- Other executors (KRNL, Fluxus, etc. often expose request())
-	if not body and type(request) == "function" then
-		local ok, res = pcall(function()
-			return request({ Url = url, Method = "GET" })
-		end)
-		if ok and res then
-			if type(res) == "string" then body = res
-			elseif res.Body then body = res.Body end
-		end
-	end
-	if not body and type(http_request) == "function" then
-		local ok, res = pcall(function()
-			return http_request({ Url = url, Method = "GET" })
-		end)
-		if ok and res and res.Body then body = res.Body end
-	end
-	if not body then return false, nil end
-	local ok, data = pcall(HttpService.JSONDecode, HttpService, body)
-	if not ok or not data then return false, nil end
-	if data.valid == true then
-		return true, data.expiry
-	end
-	return false, nil
-end
-
--- Validate key: try game server RemoteFunction first, then executor HTTP.
--- Returns valid, expiry, errMsg (errMsg = "no_remote" when neither method is available)
 local function validateKeyWithServer(key, userId)
+	-- Trim key and ensure userId is string so server matches what getkey page used
 	local keyTrimmed = (key and key:gsub("^%s+", ""):gsub("%s+$", "") or "")
 	if keyTrimmed == "" then
 		return false, nil
 	end
-	keyTrimmed = keyTrimmed:lower()
 	local userIdStr = tostring(userId)
 
-	-- 1) Try game server (if they added GoldhaxKeyValidator.server.lua)
-	if not validateRemote then
-		validateRemote = ReplicatedStorage:FindFirstChild("GoldhaxValidateKey")
-		if not validateRemote then
-			validateRemote = ReplicatedStorage:WaitForChild("GoldhaxValidateKey", 3)
-		end
-	end
-	if validateRemote then
-		local ok, valid, expiry = pcall(function()
-			return validateRemote:InvokeServer(keyTrimmed)
-		end)
-		if ok and valid then
-			return true, expiry
-		end
-	end
+	local success, response = pcall(function()
+		local url = YOUR_WEBSITE .. "/validate?key=" .. HttpService:UrlEncode(keyTrimmed) .. "&userId=" .. HttpService:UrlEncode(userIdStr)
+		local result = HttpService:GetAsync(url)
+		return HttpService:JSONDecode(result)
+	end)
 
-	-- 2) Fallback: executor HTTP (for exploit / not server owner)
-	local valid, expiry = validateWithExecutorHttp(keyTrimmed, userIdStr)
-	if valid then
-		return true, expiry
+	if success and response and (response.valid == true) then
+		return true, response.expiry
 	end
-
-	-- Neither available
-	return false, nil, "no_remote"
+	return false, nil
 end
 
 --========================================================
@@ -1140,8 +1085,8 @@ verifyBtn.MouseButton1Click:Connect(function()
 	status.TextColor3 = rgb(200, 200, 200)
 	status.Text = "Verifying key..."
 	
-	-- Validate with server (server script must be in ServerScriptService)
-	local valid, expiry, errMsg = validateKeyWithServer(enteredKey, player.UserId)
+	-- Validate with server
+	local valid, expiry = validateKeyWithServer(enteredKey, player.UserId)
 	
 	-- DEBUG: Print result
 	print("Valid: " .. tostring(valid))
@@ -1159,12 +1104,9 @@ verifyBtn.MouseButton1Click:Connect(function()
 
 		unlockTabs()
 		showNotification("✅ Key verified for 24 hours.")
-	elseif errMsg == "no_remote" then
-		status.TextColor3 = rgb(255, 180, 80)
-		status.Text = "⚠️ Server key validator not found.\n\nAdd GoldhaxKeyValidator.server.lua as a Script in ServerScriptService:\n\n1. Open ServerScriptService in Explorer\n2. Right‑click → Insert Object → Script\n3. Name it GoldhaxKeyValidator (or keep Script)\n4. Paste the contents of GoldhaxKeyValidator.server.lua\n5. Save and run the game again"
 	else
 		status.TextColor3 = rgb(255, 95, 86)
-		status.Text = "❌ Invalid or expired key.\n\nPlease follow the steps to obtain a valid key using the \"Get Key\" button above. If you already have a key, it may have expired—generate a new one at goldhax.space/getkey with your User ID."
+		status.Text = "❌ Invalid or expired key."
 	end
 end)
 
@@ -1350,5 +1292,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 	if gpe or unloaded then return end
 	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == toggleKeyCode then
 		root.Visible = not root.Visible
+	end
+end)
 	end
 end)
