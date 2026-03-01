@@ -1,0 +1,1354 @@
+-- Goldhax UI with HTTP key system
+-- Put this as a LocalScript under StarterGui.
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+--========================================================
+-- Helpers
+--========================================================
+
+local function rgb(r, g, b)
+	return Color3.fromRGB(r, g, b)
+end
+
+local function tween(obj, duration, props, easingStyle, easingDirection)
+	if not obj then return end
+	local info = TweenInfo.new(
+		duration or 0.25,
+		easingStyle or Enum.EasingStyle.Quart,
+		easingDirection or Enum.EasingDirection.Out
+	)
+	local t = TweenService:Create(obj, info, props)
+	t:Play()
+	return t
+end
+
+local function makeCorner(parent, radius)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, radius)
+	c.Parent = parent
+	return c
+end
+
+local function makeStroke(parent, thickness, color, transparency)
+	local s = Instance.new("UIStroke")
+	s.Thickness = thickness or 1
+	s.Color = color or rgb(60, 64, 74)
+	s.Transparency = transparency or 0.3
+	s.Parent = parent
+	return s
+end
+
+local function makePadding(parent, l, r, t, b)
+	local p = Instance.new("UIPadding")
+	p.PaddingLeft = UDim.new(0, l or 0)
+	p.PaddingRight = UDim.new(0, r or 0)
+	p.PaddingTop = UDim.new(0, t or 0)
+	p.PaddingBottom = UDim.new(0, b or 0)
+	p.Parent = parent
+	return p
+end
+
+local function makeLabel(parent, props)
+	local lbl = Instance.new("TextLabel")
+	lbl.BackgroundTransparency = props.BackgroundTransparency == nil and 1 or props.BackgroundTransparency
+	lbl.BackgroundColor3 = props.BackgroundColor3 or rgb(0, 0, 0)
+	lbl.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+	lbl.TextYAlignment = props.TextYAlignment or Enum.TextYAlignment.Center
+	lbl.Font = props.Font or Enum.Font.Gotham
+	lbl.TextSize = props.TextSize or 14
+	lbl.TextColor3 = props.TextColor3 or rgb(220, 220, 220)
+	lbl.TextTransparency = props.TextTransparency or 0
+	lbl.Text = props.Text or ""
+	lbl.Size = props.Size or UDim2.fromScale(1, 1)
+	lbl.Position = props.Position or UDim2.fromScale(0, 0)
+	lbl.ZIndex = props.ZIndex or 1
+	lbl.Parent = parent
+	return lbl
+end
+
+local function makeButton(parent, props)
+	local btn = Instance.new("TextButton")
+	btn.AutoButtonColor = false
+	btn.Text = props.Text or "Button"
+	btn.Font = props.Font or Enum.Font.Gotham
+	btn.TextSize = props.TextSize or 14
+	btn.TextColor3 = props.TextColor3 or rgb(230, 230, 230)
+	btn.BackgroundColor3 = props.BackgroundColor3 or rgb(40, 42, 50)
+	btn.BackgroundTransparency = props.BackgroundTransparency or 0.2
+	btn.Size = props.Size or UDim2.fromOffset(200, 36)
+	btn.Position = props.Position or UDim2.fromOffset(0, 0)
+	btn.ZIndex = props.ZIndex or 1
+	btn.Parent = parent
+	makeCorner(btn, props.CornerRadius or 10)
+	if props.Stroke ~= false then
+		makeStroke(btn, 1, props.StrokeColor or rgb(60, 64, 74), props.StrokeTransparency or 0.3)
+	end
+	return btn
+end
+
+local function makeTextBox(parent, props)
+	local tb = Instance.new("TextBox")
+	tb.ClearTextOnFocus = false
+	tb.Text = props.Text or ""
+	tb.PlaceholderText = props.PlaceholderText or ""
+	tb.PlaceholderColor3 = props.PlaceholderColor3 or rgb(150, 150, 150)
+	tb.Font = props.Font or Enum.Font.Gotham
+	tb.TextSize = props.TextSize or 14
+	tb.TextColor3 = props.TextColor3 or rgb(235, 235, 235)
+	tb.BackgroundColor3 = props.BackgroundColor3 or rgb(30, 32, 40)
+	tb.BackgroundTransparency = props.BackgroundTransparency or 0.25
+	tb.Size = props.Size or UDim2.fromOffset(280, 36)
+	tb.Position = props.Position or UDim2.fromOffset(0, 0)
+	tb.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+	tb.ZIndex = props.ZIndex or 1
+	tb.Parent = parent
+	makeCorner(tb, props.CornerRadius or 10)
+	makeStroke(tb, 1, props.StrokeColor or rgb(60, 64, 74), props.StrokeTransparency or 0.4)
+	makePadding(tb, 12, 12, 0, 0)
+	return tb
+end
+
+local function copyToClipboard(text)
+	local copied = false
+
+	if typeof(setclipboard) == "function" then
+		pcall(function()
+			setclipboard(text)
+			copied = true
+		end)
+	end
+
+	if not copied and typeof(writeclipboard) == "function" then
+		pcall(function()
+			writeclipboard(text)
+			copied = true
+		end)
+	end
+
+	if not copied and typeof(Clipboard) == "table" and typeof(Clipboard.set) == "function" then
+		pcall(function()
+			Clipboard.set(text)
+			copied = true
+		end)
+	end
+
+	return copied
+end
+
+--========================================================
+-- HTTP KEY SYSTEM CONFIG
+--========================================================
+-- Works in two modes:
+-- 1) Your own game: add GoldhaxKeyValidator.server.lua to ServerScriptService; client uses RemoteFunction.
+-- 2) Executor in someone else's game: no server script, so we use the executor's HTTP (syn.request, request, etc.) to call the site.
+
+local YOUR_WEBSITE = "https://www.goldhax.space"
+
+-- Cached remote (only used if game has the server validator script)
+local validateRemote = nil
+
+-- Try executor HTTP (for when you're not the server owner / running in an executor)
+local function validateWithExecutorHttp(keyTrimmed, userIdStr)
+	local url = YOUR_WEBSITE .. "/validate?key=" .. HttpService:UrlEncode(keyTrimmed) .. "&userId=" .. HttpService:UrlEncode(userIdStr)
+	local body = nil
+	-- Synapse / Synapse X
+	if syn and syn.request then
+		local ok, res = pcall(function()
+			return syn.request({ Url = url, Method = "GET" })
+		end)
+		if ok and res and res.Body then body = res.Body end
+	end
+	-- Other executors (KRNL, Fluxus, etc. often expose request())
+	if not body and type(request) == "function" then
+		local ok, res = pcall(function()
+			return request({ Url = url, Method = "GET" })
+		end)
+		if ok and res then
+			if type(res) == "string" then body = res
+			elseif res.Body then body = res.Body end
+		end
+	end
+	if not body and type(http_request) == "function" then
+		local ok, res = pcall(function()
+			return http_request({ Url = url, Method = "GET" })
+		end)
+		if ok and res and res.Body then body = res.Body end
+	end
+	if not body then return false, nil end
+	local ok, data = pcall(HttpService.JSONDecode, HttpService, body)
+	if not ok or not data then return false, nil end
+	if data.valid == true then
+		return true, data.expiry
+	end
+	return false, nil
+end
+
+-- Validate key: try game server RemoteFunction first, then executor HTTP.
+-- Returns valid, expiry, errMsg (errMsg = "no_remote" when neither method is available)
+local function validateKeyWithServer(key, userId)
+	local keyTrimmed = (key and key:gsub("^%s+", ""):gsub("%s+$", "") or "")
+	if keyTrimmed == "" then
+		return false, nil
+	end
+	keyTrimmed = keyTrimmed:lower()
+	local userIdStr = tostring(userId)
+
+	-- 1) Try game server (if they added GoldhaxKeyValidator.server.lua)
+	if not validateRemote then
+		validateRemote = ReplicatedStorage:FindFirstChild("GoldhaxValidateKey")
+		if not validateRemote then
+			validateRemote = ReplicatedStorage:WaitForChild("GoldhaxValidateKey", 3)
+		end
+	end
+	if validateRemote then
+		local ok, valid, expiry = pcall(function()
+			return validateRemote:InvokeServer(keyTrimmed)
+		end)
+		if ok and valid then
+			return true, expiry
+		end
+	end
+
+	-- 2) Fallback: executor HTTP (for exploit / not server owner)
+	local valid, expiry = validateWithExecutorHttp(keyTrimmed, userIdStr)
+	if valid then
+		return true, expiry
+	end
+
+	-- Neither available
+	return false, nil, "no_remote"
+end
+
+--========================================================
+-- Destroy old UI if present
+--========================================================
+
+local existing = playerGui:FindFirstChild("Goldhax_UI")
+if existing then
+	existing:Destroy()
+end
+
+--========================================================
+-- Root + layout
+--========================================================
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "Goldhax_UI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = playerGui
+
+local root = Instance.new("Frame")
+root.Name = "Root"
+root.AnchorPoint = Vector2.new(0.5, 0.5)
+root.Position = UDim2.fromScale(0.5, 0.5)
+root.Size = UDim2.fromOffset(660, 380)
+root.BackgroundColor3 = rgb(26, 28, 36)
+root.BackgroundTransparency = 0.35
+root.ClipsDescendants = true
+root.Parent = gui
+makeCorner(root, 12)
+makeStroke(root, 1, rgb(60, 64, 74), 0.35)
+
+-- TopBar
+local topBar = Instance.new("Frame")
+topBar.Name = "TopBar"
+topBar.Size = UDim2.new(1, 0, 0, 34)
+topBar.BackgroundColor3 = rgb(30, 32, 40)
+topBar.BackgroundTransparency = 0.25
+topBar.Parent = root
+makeCorner(topBar, 12)
+makeStroke(topBar, 1, rgb(60, 64, 74), 0.35)
+
+local topBarBottom = Instance.new("Frame")
+topBarBottom.Name = "TopBarBottom"
+topBarBottom.Position = UDim2.new(0, 0, 1, -12)
+topBarBottom.Size = UDim2.new(1, 0, 0, 12)
+topBarBottom.BackgroundColor3 = topBar.BackgroundColor3
+topBarBottom.BackgroundTransparency = topBar.BackgroundTransparency
+topBarBottom.BorderSizePixel = 0
+topBarBottom.Parent = topBar
+
+-- traffic light buttons
+local dots = Instance.new("Frame")
+dots.BackgroundTransparency = 1
+dots.Position = UDim2.fromOffset(14, 0)
+dots.Size = UDim2.fromOffset(70, 34)
+dots.Parent = topBar
+
+local function createDotButton(color, x)
+	local btn = Instance.new("TextButton")
+	btn.AutoButtonColor = false
+	btn.BackgroundColor3 = color
+	btn.BackgroundTransparency = 0
+	btn.Text = ""
+	btn.Size = UDim2.fromOffset(10, 10)
+	btn.Position = UDim2.fromOffset(x, 12)
+	btn.Parent = dots
+	makeCorner(btn, 999)
+	return btn
+end
+
+local redButton = createDotButton(rgb(255, 95, 86), 0)
+local yellowButton = createDotButton(rgb(255, 189, 46), 16)
+local greenButton = createDotButton(rgb(39, 201, 63), 32)
+
+makeLabel(topBar, {
+	Text = "Goldhax",
+	Font = Enum.Font.GothamMedium,
+	TextSize = 14,
+	TextColor3 = rgb(235, 235, 235),
+	Position = UDim2.fromOffset(86, 0),
+	Size = UDim2.new(1, -86, 1, 0),
+	TextXAlignment = Enum.TextXAlignment.Left,
+})
+
+-- content + sidebar
+local content = Instance.new("Frame")
+content.Name = "Content"
+content.Position = UDim2.fromOffset(0, 34)
+content.Size = UDim2.new(1, 0, 1, -34)
+content.BackgroundColor3 = rgb(20, 22, 30)
+content.BackgroundTransparency = 0.4
+content.BorderSizePixel = 0
+content.Parent = root
+
+local sidebar = Instance.new("Frame")
+sidebar.Name = "Sidebar"
+sidebar.Size = UDim2.new(0, 150, 1, 0)
+sidebar.BackgroundColor3 = rgb(22, 24, 32)
+sidebar.BackgroundTransparency = 0.45
+sidebar.BorderSizePixel = 0
+sidebar.Parent = content
+
+local divider = Instance.new("Frame")
+divider.Name = "Divider"
+divider.Position = UDim2.new(0, 150, 0, 0)
+divider.Size = UDim2.new(0, 1, 1, 0)
+divider.BackgroundColor3 = rgb(60, 64, 74)
+divider.BackgroundTransparency = 0.6
+divider.BorderSizePixel = 0
+divider.Parent = content
+
+local nav = Instance.new("Frame")
+nav.BackgroundTransparency = 1
+nav.Position = UDim2.fromOffset(10, 10)
+nav.Size = UDim2.new(1, -20, 1, -74)
+nav.Parent = sidebar
+
+local navList = Instance.new("UIListLayout")
+navList.SortOrder = Enum.SortOrder.LayoutOrder
+navList.Padding = UDim.new(0, 8)
+navList.Parent = nav
+
+-- user row bottom-left
+local userRow = Instance.new("Frame")
+userRow.BackgroundTransparency = 1
+userRow.Position = UDim2.new(0, 10, 1, -54)
+userRow.Size = UDim2.new(1, -20, 0, 44)
+userRow.Parent = sidebar
+
+local avatar = Instance.new("Frame")
+avatar.Size = UDim2.fromOffset(26, 26)
+avatar.Position = UDim2.fromOffset(0, 9)
+avatar.BackgroundColor3 = rgb(30, 32, 40)
+avatar.BackgroundTransparency = 0.2
+avatar.Parent = userRow
+makeCorner(avatar, 999)
+makeStroke(avatar, 2, rgb(225, 225, 225), 0.55)
+
+local avatarImage = Instance.new("ImageLabel")
+avatarImage.BackgroundTransparency = 1
+avatarImage.Size = UDim2.fromScale(1, 1)
+avatarImage.ScaleType = Enum.ScaleType.Crop
+avatarImage.Parent = avatar
+makeCorner(avatarImage, 999)
+
+pcall(function()
+	local thumb = Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+	if thumb and thumb ~= "" then
+		avatarImage.Image = thumb
+	end
+end)
+
+makeLabel(userRow, {
+	Text = player.DisplayName or player.Name,
+	TextSize = 13,
+	TextColor3 = rgb(210, 210, 210),
+	Position = UDim2.fromOffset(34, 0),
+	Size = UDim2.new(1, -34, 1, 0),
+})
+
+-- pages
+local pages = Instance.new("Frame")
+pages.Position = UDim2.fromOffset(151, 0)
+pages.Size = UDim2.new(1, -151, 1, 0)
+pages.BackgroundTransparency = 1
+pages.Parent = content
+
+local function makePage(name)
+	local page = Instance.new("Frame")
+	page.Name = name
+	page.Visible = false
+	page.BackgroundTransparency = 1
+	page.Size = UDim2.fromScale(1, 1)
+	page.Parent = pages
+	return page
+end
+
+local pageHome = makePage("Home")
+local pageKey = makePage("Key System")
+local pageScripts = makePage("Scripts")
+local pagePlayer = makePage("Player")
+local pageSettings = makePage("Settings")
+
+--========================================================
+-- Notification system
+--========================================================
+
+local activeNotification
+
+local function showNotification(message)
+	if activeNotification then
+		activeNotification:Destroy()
+		activeNotification = nil
+	end
+
+	local notif = Instance.new("Frame")
+	notif.Name = "GoldhaxNotification"
+	notif.AnchorPoint = Vector2.new(1, 1)
+	notif.Size = UDim2.fromOffset(260, 60)
+	notif.Position = UDim2.new(1, -20, 1, 20)
+	notif.BackgroundColor3 = rgb(16, 17, 20)
+	notif.BackgroundTransparency = 1
+	notif.Parent = gui
+	makeCorner(notif, 10)
+	makeStroke(notif, 1, rgb(60, 64, 74), 0.5)
+
+	local text = makeLabel(notif, {
+		Text = message,
+		Font = Enum.Font.Gotham,
+		TextSize = 13,
+		TextColor3 = rgb(235, 235, 235),
+		Position = UDim2.fromOffset(12, 8),
+		Size = UDim2.new(1, -40, 1, -16),
+		TextYAlignment = Enum.TextYAlignment.Top,
+	})
+	text.TextTransparency = 1
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.AutoButtonColor = false
+	closeBtn.AnchorPoint = Vector2.new(1, 0)
+	closeBtn.Size = UDim2.fromOffset(18, 18)
+	closeBtn.Position = UDim2.new(1, -8, 0, 8)
+	closeBtn.BackgroundColor3 = rgb(32, 35, 44)
+	closeBtn.BackgroundTransparency = 1
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = rgb(235, 235, 235)
+	closeBtn.TextSize = 12
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.Parent = notif
+	makeCorner(closeBtn, 6)
+	closeBtn.TextTransparency = 1
+
+	activeNotification = notif
+
+	tween(notif, 0.4, { Position = UDim2.new(1, -20, 1, -20), BackgroundTransparency = 0.25 })
+	tween(text, 0.35, { TextTransparency = 0 })
+
+	local hovering = false
+	local closed = false
+
+	local function fadeOutAndDestroy()
+		if closed then return end
+		closed = true
+		local t1 = tween(notif, 0.3, { Position = UDim2.new(1, -20, 1, 20), BackgroundTransparency = 1 }, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+		tween(text, 0.2, { TextTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		tween(closeBtn, 0.18, { TextTransparency = 1, BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		t1.Completed:Wait()
+		if notif.Parent then
+			notif:Destroy()
+		end
+		if activeNotification == notif then
+			activeNotification = nil
+		end
+	end
+
+	notif.MouseEnter:Connect(function()
+		hovering = true
+		tween(closeBtn, 0.2, { TextTransparency = 0, BackgroundTransparency = 0.2 })
+	end)
+
+	notif.MouseLeave:Connect(function()
+		hovering = false
+		tween(closeBtn, 0.2, { TextTransparency = 1, BackgroundTransparency = 1 })
+	end)
+
+	closeBtn.MouseButton1Click:Connect(function()
+		fadeOutAndDestroy()
+	end)
+
+	task.delay(3, function()
+		if not hovering then
+			fadeOutAndDestroy()
+		end
+	end)
+end
+
+showNotification("Successfully loaded script.")
+
+--========================================================
+-- Home page
+--========================================================
+
+makeLabel(pageHome, {
+	Text = "Home",
+	Font = Enum.Font.GothamMedium,
+	TextSize = 18,
+	TextColor3 = rgb(235, 235, 235),
+	Position = UDim2.fromOffset(26, 18),
+	Size = UDim2.new(1, -52, 0, 22),
+})
+
+makeLabel(pageHome, {
+	Text = ("Hello %s, welcome to Goldhax, please enjoy."):format(player.DisplayName or player.Name),
+	TextSize = 14,
+	TextColor3 = rgb(200, 200, 200),
+	Position = UDim2.fromOffset(26, 50),
+	Size = UDim2.new(1, -52, 0, 40),
+	TextYAlignment = Enum.TextYAlignment.Top,
+})
+
+--========================================================
+-- Key System page (HTTP validation)
+--========================================================
+
+local keyBox = makeTextBox(pageKey, {
+	PlaceholderText = "Enter your key here...",
+	Size = UDim2.fromOffset(430, 38),
+	Position = UDim2.fromOffset(26, 56),
+	CornerRadius = 10,
+})
+
+local accentBlue = rgb(86, 185, 255)
+
+local verifyBtn = makeButton(pageKey, {
+	Text = "Verify Key",
+	TextColor3 = accentBlue,
+	Size = UDim2.fromOffset(430, 44),
+	Position = UDim2.fromOffset(26, 106),
+})
+
+local getBtn = makeButton(pageKey, {
+	Text = "Get Key",
+	TextColor3 = accentBlue,
+	Size = UDim2.fromOffset(430, 44),
+	Position = UDim2.fromOffset(26, 160),
+})
+
+local status = makeLabel(pageKey, {
+	Text = "",
+	TextSize = 12,
+	TextColor3 = rgb(60, 220, 120),
+	Position = UDim2.fromOffset(26, 214),
+	Size = UDim2.fromOffset(430, 60),
+	TextXAlignment = Enum.TextXAlignment.Center,
+	TextYAlignment = Enum.TextYAlignment.Top,
+	TextWrapped = true,
+})
+
+--========================================================
+-- Settings (FPS, hotkey)
+--========================================================
+
+local fpsLabel
+local showFPS = false
+local fpsConn
+local toggleKeyCode = Enum.KeyCode.K
+
+makeLabel(pageSettings, {
+	Text = "Settings",
+	Font = Enum.Font.GothamMedium,
+	TextSize = 18,
+	TextColor3 = rgb(235, 235, 235),
+	Position = UDim2.fromOffset(26, 18),
+	Size = UDim2.new(1, -52, 0, 22),
+})
+
+local fpsToggle = makeButton(pageSettings, {
+	Text = "Display FPS: OFF",
+	Size = UDim2.fromOffset(180, 32),
+	Position = UDim2.fromOffset(26, 60),
+	CornerRadius = 8,
+})
+
+fpsLabel = makeLabel(gui, {
+	Text = "",
+	TextSize = 13,
+	TextColor3 = rgb(210, 210, 210),
+	Position = UDim2.new(1, -90, 0, 6),
+	Size = UDim2.fromOffset(80, 18),
+	TextXAlignment = Enum.TextXAlignment.Right,
+})
+
+fpsToggle.MouseButton1Click:Connect(function()
+	showFPS = not showFPS
+	fpsToggle.Text = showFPS and "Display FPS: ON" or "Display FPS: OFF"
+	if not showFPS then
+		fpsLabel.Text = ""
+	end
+end)
+
+do
+	local last = tick()
+	fpsConn = RunService.Heartbeat:Connect(function()
+		if not showFPS then
+			return
+		end
+		local now = tick()
+		local dt = now - last
+		last = now
+		if dt > 0 then
+			fpsLabel.Text = ("FPS: %d"):format(math.floor(0.5 + (1 / dt)))
+		end
+	end)
+end
+
+makeLabel(pageSettings, {
+	Text = "GUI Hotkey:",
+	TextSize = 14,
+	TextColor3 = rgb(220, 220, 220),
+	Position = UDim2.fromOffset(26, 104),
+	Size = UDim2.fromOffset(120, 24),
+})
+
+local hotkeyBox = makeTextBox(pageSettings, {
+	Text = "K",
+	Size = UDim2.fromOffset(40, 28),
+	Position = UDim2.fromOffset(126, 104),
+	CornerRadius = 6,
+})
+
+local setHotkeyBtn = makeButton(pageSettings, {
+	Text = "Set",
+	Size = UDim2.fromOffset(60, 28),
+	Position = UDim2.fromOffset(176, 104),
+	CornerRadius = 6,
+})
+
+setHotkeyBtn.MouseButton1Click:Connect(function()
+	local txt = hotkeyBox.Text or ""
+	local ch = string.upper(string.sub(txt, 1, 1))
+	local key = Enum.KeyCode[ch]
+	if key then
+		toggleKeyCode = key
+		showNotification("GUI hotkey set to " .. ch)
+	else
+		showNotification("Invalid key: " .. txt)
+	end
+end)
+
+--========================================================
+-- Player features (ESP, sliders, fly)
+--========================================================
+
+local espEnabled = false
+local espHighlights = {}
+local espConnections = {}
+
+local function clearESP()
+	for _, h in ipairs(espHighlights) do
+		if h and h.Parent then
+			h:Destroy()
+		end
+	end
+	espHighlights = {}
+	for _, c in ipairs(espConnections) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	espConnections = {}
+end
+
+local function attachHighlightToCharacter(character)
+	if not character then return end
+	if character:FindFirstChildOfClass("Highlight") then return end
+	local h = Instance.new("Highlight")
+	h.FillTransparency = 1
+	h.OutlineTransparency = 0
+	h.OutlineColor = accentBlue
+	h.Adornee = character
+	h.Parent = character
+	table.insert(espHighlights, h)
+end
+
+local function enableESP()
+	clearESP()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= player then
+			attachHighlightToCharacter(plr.Character)
+			table.insert(espConnections, plr.CharacterAdded:Connect(function(char)
+				if espEnabled then
+					attachHighlightToCharacter(char)
+				end
+			end))
+		end
+	end
+end
+
+local function disableESP()
+	clearESP()
+end
+
+local function getHumanoid()
+	local char = player.Character or player.CharacterAdded:Wait()
+	return char:FindFirstChildOfClass("Humanoid"), char
+end
+
+-- fly
+local flying = false
+local flyBV
+local flyConn
+local inputBeganConn
+local inputEndedConn
+
+local keysDown = {
+	W = false,
+	A = false,
+	S = false,
+	D = false,
+	Space = false,
+	LeftShift = false,
+}
+
+inputBeganConn = UserInputService.InputBegan:Connect(function(input, gpe)
+	if gpe then return end
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		local key = input.KeyCode.Name
+		if keysDown[key] ~= nil then
+			keysDown[key] = true
+		end
+	end
+end)
+
+inputEndedConn = UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		local key = input.KeyCode.Name
+		if keysDown[key] ~= nil then
+			keysDown[key] = false
+		end
+	end
+end)
+
+local function setFlying(enabled)
+	if flying == enabled then return end
+	flying = enabled
+
+	local hum, char = getHumanoid()
+	if not hum or not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+
+	if flying then
+		flyBV = Instance.new("BodyVelocity")
+		flyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+		flyBV.Velocity = Vector3.zero
+		flyBV.Parent = hrp
+
+		hum.PlatformStand = true
+
+		flyConn = RunService.RenderStepped:Connect(function()
+			if not flying or not flyBV or not flyBV.Parent then return end
+			local cam = workspace.CurrentCamera
+			if not cam then return end
+			local dir = Vector3.zero
+			local cf = cam.CFrame
+			if keysDown.W then dir += cf.LookVector end
+			if keysDown.S then dir -= cf.LookVector end
+			if keysDown.A then dir -= cf.RightVector end
+			if keysDown.D then dir += cf.RightVector end
+			if keysDown.Space then dir += Vector3.new(0, 1, 0) end
+			if keysDown.LeftShift then dir -= Vector3.new(0, 1, 0) end
+			if dir.Magnitude > 0 then dir = dir.Unit end
+			flyBV.Velocity = dir * 60
+		end)
+	else
+		if flyBV then flyBV:Destroy() flyBV = nil end
+		if flyConn then flyConn:Disconnect() flyConn = nil end
+		hum.PlatformStand = false
+	end
+end
+
+-- Player page layout with list => no overlap
+makeLabel(pagePlayer, {
+	Text = "Player",
+	Font = Enum.Font.GothamMedium,
+	TextSize = 18,
+	TextColor3 = rgb(235, 235, 235),
+	Position = UDim2.fromOffset(26, 18),
+	Size = UDim2.new(1, -52, 0, 22),
+})
+
+local playerStack = Instance.new("Frame")
+playerStack.BackgroundTransparency = 1
+playerStack.Position = UDim2.fromOffset(26, 56)
+playerStack.Size = UDim2.new(1, -52, 1, -70)
+playerStack.Parent = pagePlayer
+
+local stackList = Instance.new("UIListLayout")
+stackList.SortOrder = Enum.SortOrder.LayoutOrder
+stackList.Padding = UDim.new(0, 12)
+stackList.Parent = playerStack
+
+local function makeRow(height)
+	local row = Instance.new("Frame")
+	row.BackgroundTransparency = 1
+	row.Size = UDim2.new(1, 0, 0, height)
+	row.Parent = playerStack
+	return row
+end
+
+-- ESP row
+do
+	local row = makeRow(34)
+	local espBtn = makeButton(row, {
+		Text = "ESP: OFF",
+		Size = UDim2.fromOffset(150, 32),
+		Position = UDim2.fromOffset(0, 0),
+		CornerRadius = 8,
+	})
+	espBtn.MouseButton1Click:Connect(function()
+		espEnabled = not espEnabled
+		espBtn.Text = espEnabled and "ESP: ON" or "ESP: OFF"
+		if espEnabled then
+			enableESP()
+		else
+			disableESP()
+		end
+	end)
+end
+
+-- slider helper
+local function makeSlider(parent, options)
+	local sliderFrame = Instance.new("Frame")
+	sliderFrame.BackgroundTransparency = 1
+	sliderFrame.Size = UDim2.new(1, 0, 0, 40)
+	sliderFrame.Parent = parent
+
+	makeLabel(sliderFrame, {
+		Text = options.Label or "Slider",
+		TextSize = 13,
+		TextColor3 = rgb(210, 210, 210),
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.fromOffset(160, 18),
+	})
+
+	local valueLabel = makeLabel(sliderFrame, {
+		Text = tostring(options.Default or options.Min),
+		TextSize = 13,
+		TextColor3 = rgb(190, 190, 190),
+		Position = UDim2.fromOffset(170, 0),
+		Size = UDim2.fromOffset(90, 18),
+	})
+
+	local bar = Instance.new("Frame")
+	bar.BackgroundColor3 = rgb(40, 42, 50)
+	bar.BackgroundTransparency = 0.3
+	bar.Size = UDim2.new(1, -10, 0, 6)
+	bar.Position = UDim2.fromOffset(0, 26)
+	bar.Parent = sliderFrame
+	makeCorner(bar, 3)
+
+	local fill = Instance.new("Frame")
+	fill.BackgroundColor3 = accentBlue
+	fill.BackgroundTransparency = 0.15
+	fill.Size = UDim2.fromOffset(0, 6)
+	fill.Parent = bar
+	makeCorner(fill, 3)
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(12, 12)
+	knob.BackgroundColor3 = rgb(235, 235, 235)
+	knob.Parent = bar
+	makeCorner(knob, 999)
+
+	local dragging = false
+	local min = options.Min or 0
+	local max = options.Max or 100
+	local current = options.Default or min
+
+	local function updateFromPercent(p)
+		p = math.clamp(p, 0, 1)
+		current = min + (max - min) * p
+		local px = math.floor(p * bar.AbsoluteSize.X)
+		fill.Size = UDim2.fromOffset(px, 6)
+		knob.Position = UDim2.fromOffset(px - 6, -3)
+		valueLabel.Text = string.format("%.1f", current)
+		if options.OnChanged then
+			options.OnChanged(current)
+		end
+	end
+
+	local function inputToPercent(input)
+		local relX = input.Position.X - bar.AbsolutePosition.X
+		return relX / math.max(1, bar.AbsoluteSize.X)
+	end
+
+	bar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			updateFromPercent(inputToPercent(input))
+		end
+	end)
+	bar.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			updateFromPercent(inputToPercent(input))
+		end
+	end)
+
+	task.defer(function()
+		updateFromPercent((current - min) / (max - min))
+	end)
+
+	return {
+		GetValue = function()
+			return current
+		end,
+	}
+end
+
+-- speed row
+local speedEnabled = false
+local currentSpeed = 16
+do
+	local row = makeRow(78)
+	makeSlider(row, {
+		Label = "WalkSpeed",
+		Min = 8,
+		Max = 100,
+		Default = 16,
+		OnChanged = function(v)
+			currentSpeed = v
+			if speedEnabled then
+				local hum = getHumanoid()
+				if hum then
+					hum.WalkSpeed = currentSpeed
+				end
+			end
+		end,
+	})
+	local toggle = makeButton(row, {
+		Text = "Speed: OFF",
+		Size = UDim2.fromOffset(120, 28),
+		Position = UDim2.fromOffset(0, 46),
+		CornerRadius = 8,
+	})
+	toggle.MouseButton1Click:Connect(function()
+		speedEnabled = not speedEnabled
+		toggle.Text = speedEnabled and "Speed: ON" or "Speed: OFF"
+		local hum = getHumanoid()
+		if hum then
+			hum.WalkSpeed = speedEnabled and currentSpeed or 16
+		end
+	end)
+end
+
+-- jump row
+local jumpEnabled = false
+local currentJump = 7.2
+do
+	local row = makeRow(78)
+	makeSlider(row, {
+		Label = "JumpHeight",
+		Min = 4,
+		Max = 20,
+		Default = 7.2,
+		OnChanged = function(v)
+			currentJump = v
+			if jumpEnabled then
+				local hum = getHumanoid()
+				if hum then
+					hum.UseJumpPower = false
+					hum.JumpHeight = currentJump
+				end
+			end
+		end,
+	})
+	local toggle = makeButton(row, {
+		Text = "Jump: OFF",
+		Size = UDim2.fromOffset(120, 28),
+		Position = UDim2.fromOffset(0, 46),
+		CornerRadius = 8,
+	})
+	toggle.MouseButton1Click:Connect(function()
+		jumpEnabled = not jumpEnabled
+		toggle.Text = jumpEnabled and "Jump: ON" or "Jump: OFF"
+		local hum = getHumanoid()
+		if hum then
+			hum.UseJumpPower = false
+			hum.JumpHeight = jumpEnabled and currentJump or 7.2
+		end
+	end)
+end
+
+-- fly row
+do
+	local row = makeRow(34)
+	local flyBtn = makeButton(row, {
+		Text = "Fly: OFF",
+		Size = UDim2.fromOffset(150, 32),
+		Position = UDim2.fromOffset(0, 0),
+		CornerRadius = 8,
+	})
+	flyBtn.MouseButton1Click:Connect(function()
+		setFlying(not flying)
+		flyBtn.Text = flying and "Fly: ON" or "Fly: OFF"
+	end)
+end
+
+-- Scripts page placeholder
+makeLabel(pageScripts, {
+	Text = "Scripts",
+	Font = Enum.Font.GothamMedium,
+	TextSize = 18,
+	TextColor3 = rgb(235, 235, 235),
+	Position = UDim2.fromOffset(26, 18),
+	Size = UDim2.new(1, -52, 0, 22),
+})
+
+makeLabel(pageScripts, {
+	Text = "Unlocked via Key System.",
+	TextSize = 13,
+	TextColor3 = rgb(190, 190, 190),
+	Position = UDim2.fromOffset(26, 48),
+	Size = UDim2.new(1, -52, 0, 18),
+})
+
+--========================================================
+-- Nav + key gating (uses HTTP validation)
+--========================================================
+
+local hasKey = false
+local navButtons = {}
+local activeName
+
+local function setActive(name)
+	activeName = name
+	for _, page in ipairs(pages:GetChildren()) do
+		if page:IsA("Frame") then
+			page.Visible = (page.Name == name)
+		end
+	end
+	for n, btn in pairs(navButtons) do
+		if n == name then
+			btn.BackgroundColor3 = rgb(40, 42, 50)
+			tween(btn, 0.15, { BackgroundTransparency = 0.15 })
+			btn.TextColor3 = rgb(235, 235, 235)
+		else
+			tween(btn, 0.15, { BackgroundTransparency = 1 })
+			btn.TextColor3 = rgb(180, 180, 180)
+		end
+	end
+end
+
+local function makeNavButton(text)
+	local btn = Instance.new("TextButton")
+	btn.AutoButtonColor = false
+	btn.Text = text
+	btn.Font = Enum.Font.Gotham
+	btn.TextSize = 13
+	btn.TextXAlignment = Enum.TextXAlignment.Left
+	btn.TextColor3 = rgb(180, 180, 180)
+	btn.BackgroundColor3 = rgb(32, 34, 42)
+	btn.BackgroundTransparency = 1
+	btn.Size = UDim2.new(1, 0, 0, 34)
+	btn.Parent = nav
+	makeCorner(btn, 8)
+	makePadding(btn, 12, 10, 0, 0)
+
+	btn.MouseEnter:Connect(function()
+		if activeName ~= text then
+			tween(btn, 0.14, { BackgroundTransparency = 0.35 })
+		end
+	end)
+	btn.MouseLeave:Connect(function()
+		if activeName ~= text then
+			tween(btn, 0.14, { BackgroundTransparency = 1 })
+		end
+	end)
+
+	btn.MouseButton1Click:Connect(function()
+		if not hasKey and (text == "Scripts" or text == "Player") then
+			showNotification("Enter a valid key first.")
+			return
+		end
+		setActive(text)
+	end)
+
+	return btn
+end
+
+navButtons["Home"] = makeNavButton("Home")
+navButtons["Key System"] = makeNavButton("Key System")
+navButtons["Settings"] = makeNavButton("Settings")
+
+local function unlockTabs()
+	if navButtons["Scripts"] or navButtons["Player"] then return end
+	navButtons["Scripts"] = makeNavButton("Scripts")
+	navButtons["Player"] = makeNavButton("Player")
+	showNotification("✅ Key accepted! Tabs unlocked.")
+end
+
+-- use stored attributes if still valid
+do
+	local verified = player:GetAttribute("Verified")
+	local expiry = player:GetAttribute("Expiry")
+	local nowMs = os.time() * 1000
+	if verified and expiry and nowMs < expiry then
+		hasKey = true
+		unlockTabs()
+		print("Goldhax: player already verified, tabs unlocked.")
+	end
+end
+
+verifyBtn.MouseButton1Click:Connect(function()
+	local rawKey = keyBox.Text or ""
+	-- Trim whitespace/newlines from paste (fixes "invalid key" when key is correct)
+	local enteredKey = rawKey:gsub("^%s+", ""):gsub("%s+$", "")
+	
+	-- DEBUG: Print what we're checking
+	print("Checking key: " .. enteredKey)
+	print("For user: " .. player.UserId)
+	
+	-- Show loading
+	status.TextColor3 = rgb(200, 200, 200)
+	status.Text = "Verifying key..."
+	
+	-- Validate with server (server script must be in ServerScriptService)
+	local valid, expiry, errMsg = validateKeyWithServer(enteredKey, player.UserId)
+	
+	-- DEBUG: Print result
+	print("Valid: " .. tostring(valid))
+	if valid then
+		print("Expiry: " .. expiry)
+	end
+	
+	if valid then
+		hasKey = true
+		status.TextColor3 = rgb(60, 220, 120)
+		status.Text = "✅ Key Verified! Loading features..."
+
+		player:SetAttribute("Verified", true)
+		player:SetAttribute("Expiry", expiry)
+
+		unlockTabs()
+		showNotification("✅ Key verified for 24 hours.")
+	elseif errMsg == "no_remote" then
+		status.TextColor3 = rgb(255, 180, 80)
+		status.Text = "⚠️ Server key validator not found.\n\nAdd GoldhaxKeyValidator.server.lua as a Script in ServerScriptService:\n\n1. Open ServerScriptService in Explorer\n2. Right‑click → Insert Object → Script\n3. Name it GoldhaxKeyValidator (or keep Script)\n4. Paste the contents of GoldhaxKeyValidator.server.lua\n5. Save and run the game again"
+	else
+		status.TextColor3 = rgb(255, 95, 86)
+		status.Text = "❌ Invalid or expired key.\n\nPlease follow the steps to obtain a valid key using the \"Get Key\" button above. If you already have a key, it may have expired—generate a new one at goldhax.space/getkey with your User ID."
+	end
+end)
+
+getBtn.MouseButton1Click:Connect(function()
+	local url = string.format("%s/getkey?userId=%d", YOUR_WEBSITE, player.UserId)
+	local copied = copyToClipboard(url)
+	
+	status.TextColor3 = rgb(200, 200, 200)
+	status.Text = "📋 Link copied to clipboard!\n\n" ..
+	             "1. Open your web browser\n" ..
+	             "2. Paste the link: " .. url .. "\n" ..
+	             "3. Your User ID: " .. player.UserId .. "\n" ..
+	             "4. Copy the generated key\n" ..
+	             "5. Paste it in the key box above\n\n" ..
+	             "✅ The link has been copied to your clipboard"
+	
+	if copied then
+		showNotification("📋 Link copied!\nPaste in browser:\n" .. url)
+	else
+		showNotification("❌ Copy failed\nManual link:\n" .. url)
+	end
+end)
+
+setActive("Key System")
+
+--========================================================
+-- Dragging + minimize/unload/hotkey
+--========================================================
+
+-- dragging
+do
+	local dragging = false
+	local dragStartPos
+	local startRootPos
+
+	topBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			dragStartPos = input.Position
+			startRootPos = root.Position
+		end
+	end)
+
+	topBar.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local delta = input.Position - dragStartPos
+			root.Position = UDim2.new(
+				startRootPos.X.Scale,
+				startRootPos.X.Offset + delta.X,
+				startRootPos.Y.Scale,
+				startRootPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+end
+
+local unloaded = false
+local isMinimized = false
+local originalSize = root.Size
+local originalPosition = root.Position
+local originalAbsTopLeft
+local originalAbsSize
+
+local function unloadScript()
+	if unloaded then return end
+	unloaded = true
+	clearESP()
+	setFlying(false)
+	if fpsConn then fpsConn:Disconnect() end
+	if flyConn then flyConn:Disconnect() end
+	if inputBeganConn then inputBeganConn:Disconnect() end
+	if inputEndedConn then inputEndedConn:Disconnect() end
+	gui:Destroy()
+end
+
+local function showConfirmUnload()
+	local overlay = Instance.new("Frame")
+	overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+	overlay.BackgroundTransparency = 0.45
+	overlay.Size = UDim2.fromScale(1, 1)
+	overlay.ZIndex = 50
+	overlay.Parent = root
+
+	local box = Instance.new("Frame")
+	box.Size = UDim2.fromOffset(260, 120)
+	box.AnchorPoint = Vector2.new(0.5, 0.5)
+	box.Position = UDim2.fromScale(0.5, 0.5)
+	box.BackgroundColor3 = rgb(24, 26, 34)
+	box.BackgroundTransparency = 0.1
+	box.ZIndex = 51
+	box.Parent = overlay
+	makeCorner(box, 10)
+	makeStroke(box, 1, rgb(60, 64, 74), 0.35)
+
+	makeLabel(box, {
+		Text = "Unload Goldhax?",
+		Font = Enum.Font.GothamMedium,
+		TextSize = 15,
+		TextColor3 = rgb(235, 235, 235),
+		Position = UDim2.fromOffset(16, 12),
+		Size = UDim2.new(1, -32, 0, 22),
+		ZIndex = 52,
+	})
+
+	makeLabel(box, {
+		Text = "This will remove the UI and features.",
+		TextSize = 13,
+		TextColor3 = rgb(190, 190, 190),
+		Position = UDim2.fromOffset(16, 36),
+		Size = UDim2.new(1, -32, 0, 18),
+		ZIndex = 52,
+	})
+
+	local yesBtn = makeButton(box, {
+		Text = "Yes",
+		Size = UDim2.fromOffset(100, 30),
+		Position = UDim2.fromOffset(24, 72),
+		CornerRadius = 8,
+		ZIndex = 52,
+	})
+
+	local noBtn = makeButton(box, {
+		Text = "No",
+		Size = UDim2.fromOffset(100, 30),
+		Position = UDim2.fromOffset(136, 72),
+		CornerRadius = 8,
+		ZIndex = 52,
+	})
+
+	yesBtn.MouseButton1Click:Connect(function()
+		overlay:Destroy()
+		unloadScript()
+	end)
+
+	noBtn.MouseButton1Click:Connect(function()
+		overlay:Destroy()
+	end)
+end
+
+local function setMinimized(minimize)
+	if minimize and not isMinimized then
+		isMinimized = true
+		originalSize = root.Size
+		originalPosition = root.Position
+		originalAbsTopLeft = root.AbsolutePosition
+		originalAbsSize = root.AbsoluteSize
+
+		content.Visible = false
+
+		root.AnchorPoint = Vector2.new(0, 0)
+		root.Position = UDim2.fromOffset(originalAbsTopLeft.X, originalAbsTopLeft.Y)
+		root.Size = UDim2.fromOffset(originalAbsSize.X, originalAbsSize.Y)
+
+		tween(root, 0.45, { Size = UDim2.fromOffset(260, 46) }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+	elseif not minimize and isMinimized then
+		isMinimized = false
+
+		local t = tween(root, 0.45, { Size = UDim2.fromOffset(originalAbsSize.X, originalAbsSize.Y) }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		t.Completed:Wait()
+
+		root.AnchorPoint = Vector2.new(0.5, 0.5)
+		root.Size = originalSize
+		root.Position = originalPosition
+		content.Visible = true
+	end
+end
+
+redButton.MouseButton1Click:Connect(showConfirmUnload)
+yellowButton.MouseButton1Click:Connect(function()
+	setMinimized(true)
+end)
+greenButton.MouseButton1Click:Connect(function()
+	setMinimized(false)
+end)
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+	if gpe or unloaded then return end
+	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == toggleKeyCode then
+		root.Visible = not root.Visible
+	end
+end)
