@@ -143,33 +143,91 @@ local function copyToClipboard(text)
 	return copied
 end
 
---========================================================
 -- HTTP KEY SYSTEM CONFIG
 --========================================================
-
 local YOUR_WEBSITE = "https://www.goldhax.space"  -- Your actual website
-
 --========================================================
 -- Function to validate a key with your server
 --========================================================
+-- put near your other locals
+local function getHttpRequest()
+	-- Try common exploit / client HTTP APIs
+	if typeof(syn) == "table" and typeof(syn.request) == "function" then
+		return syn.request
+	elseif typeof(http) == "table" and typeof(http.request) == "function" then
+		return http.request
+	elseif typeof(request) == "function" then
+		return request
+	elseif typeof(http_request) == "function" then
+		return http_request
+	elseif typeof(HTTPRequest) == "function" then
+		return HTTPRequest
+	end
+	return nil
+end
+
+local httpRequest = getHttpRequest()
 
 local function validateKeyWithServer(key, userId)
-	-- Trim key and ensure userId is string so server matches what getkey page used
 	local keyTrimmed = (key and key:gsub("^%s+", ""):gsub("%s+$", "") or "")
 	if keyTrimmed == "" then
 		return false, nil
 	end
-	local userIdStr = tostring(userId)
 
-	local success, response = pcall(function()
-		local url = YOUR_WEBSITE .. "/validate?key=" .. HttpService:UrlEncode(keyTrimmed) .. "&userId=" .. HttpService:UrlEncode(userIdStr)
-		local result = HttpService:GetAsync(url)
-		return HttpService:JSONDecode(result)
+	if not httpRequest then
+		warn("Goldhax: No client HTTP function found (syn.request/http_request/request/http.request/etc.)")
+		return false, nil
+	end
+
+	local userIdStr = tostring(userId)
+	local url = YOUR_WEBSITE
+		.. "/validate?key=" .. HttpService:UrlEncode(keyTrimmed)
+		.. "&userId=" .. HttpService:UrlEncode(userIdStr)
+
+	print("Goldhax URL (client):", url)
+
+	local success, resOrErr = pcall(function()
+		return httpRequest({
+			Url = url,
+			Method = "GET",
+			-- If your site needs headers, add them here:
+			-- Headers = { ["User-Agent"] = "GoldhaxClient" }
+		})
 	end)
 
-	if success and response and (response.valid == true) then
+	print("Goldhax HTTP success:", tostring(success))
+
+	if not success then
+		warn("Goldhax HTTP error:", resOrErr)
+		return false, nil
+	end
+
+	local res = resOrErr or {}
+	local body = res.Body or res.body or res.Data or res.data
+
+	if not body or body == "" then
+		warn("Goldhax: empty HTTP response body")
+		return false, nil
+	end
+
+	print("Goldhax RAW (client):", body)
+
+	local decodeOk, decoded = pcall(function()
+		return HttpService:JSONDecode(body)
+	end)
+
+	if not decodeOk then
+		warn("Goldhax JSON decode error:", decoded)
+		return false, nil
+	end
+
+	local response = decoded
+	print("Goldhax decoded valid:", tostring(response.valid), "reason:", tostring(response.reason))
+
+	if response and response.valid == true then
 		return true, response.expiry
 	end
+
 	return false, nil
 end
 
@@ -1292,7 +1350,5 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 	if gpe or unloaded then return end
 	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == toggleKeyCode then
 		root.Visible = not root.Visible
-	end
-end)
 	end
 end)
