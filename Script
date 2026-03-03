@@ -1123,7 +1123,8 @@ do
 	local verified = player:GetAttribute("Verified")
 	local expiry = player:GetAttribute("Expiry")
 	local nowMs = os.time() * 1000
-	if verified and expiry and nowMs < expiry then
+	-- If expiry is nil, treat it as infinite
+	if verified and (expiry == nil or nowMs < expiry) then
 		hasKey = true
 		unlockTabs()
 		print("Goldhax: player already verified, tabs unlocked.")
@@ -1149,9 +1150,10 @@ verifyBtn.MouseButton1Click:Connect(function()
 	-- DEBUG: Print result
 	print("Valid: " .. tostring(valid))
 	if valid then
-		print("Expiry: " .. expiry)
+		-- expiry can be nil (infinite); tostring avoids concat errors
+		print("Expiry: " .. tostring(expiry))
 	end
-	
+
 	if valid then
 		hasKey = true
 		status.TextColor3 = rgb(60, 220, 120)
@@ -1161,7 +1163,13 @@ verifyBtn.MouseButton1Click:Connect(function()
 		player:SetAttribute("Expiry", expiry)
 
 		unlockTabs()
-		showNotification("✅ Key verified for 24 hours.")
+
+		-- If expiry is nil, treat as infinite duration
+		if expiry == nil then
+			showNotification("✅ Key verified (no expiry).")
+		else
+			showNotification("✅ Key verified for 24 hours.")
+		end
 	else
 		status.TextColor3 = rgb(255, 95, 86)
 		status.Text = "❌ Invalid or expired key."
